@@ -1,0 +1,160 @@
+import 'dart:convert';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:http/http.dart' as http;
+import '../models/user_model.dart';
+import '../env.dart';
+
+class UserService {
+  static const String _baseUrl = '${Env.apiBase}'; // Voor Android Emulator
+
+  // ✅ Login: sla token en session_id op
+  static Future<Map<String, dynamic>?> login(String email, String pin) async {
+    final response = await http.post(
+      Uri.parse('$_baseUrl/login'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'email': email, 'pin_code': pin}),
+    );
+
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body);
+      final prefs = await SharedPreferences.getInstance();
+
+      // ✅ Session ID opslaan uit cookie
+      final rawCookie = response.headers['set-cookie'];
+      if (rawCookie != null) {
+        final sessionMatch = RegExp(r'session_id=([^;]+)').firstMatch(rawCookie);
+        if (sessionMatch != null) {
+          final sessionId = sessionMatch.group(1);
+          await prefs.setString('session_id', sessionId!);
+        }
+      }
+
+      // ✅ Token opslaan
+      if (data['access_token'] != null) {
+        await prefs.setString('token', data['access_token']);
+      }
+
+      return data;
+    } else {
+      print('❌ Login mislukt: ${response.statusCode} ${response.body}');
+      return null;
+    }
+  }
+
+  static Future<bool> registreer(Map<String, dynamic> gebruiker) async {
+    final response = await http.post(
+      Uri.parse('$_baseUrl/registreer'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode(gebruiker),
+    );
+    return response.statusCode == 200;
+  }
+
+  static Future<List<dynamic>> haalGebruikersTerGoedkeuringOp() async {
+    final response = await http.get(Uri.parse('$_baseUrl/te-goedkeuren'));
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    } else {
+      return [];
+    }
+  }
+
+  static Future<bool> keurGebruikerGoed(int gebruikerId) async {
+    final response = await http.post(
+      Uri.parse('$_baseUrl/goedkeuren/$gebruikerId'),
+    );
+    return response.statusCode == 200;
+  }
+
+  static Future<Map<String, dynamic>?> haalGebruikerOp(int id) async {
+    final response = await http.get(Uri.parse('$_baseUrl/user/$id'));
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    } else {
+      return null;
+    }
+  }
+
+  // ✅ Groepsfunctionaliteit
+  static Future<List<UserModel>> getGroupMembers() async {
+    final response = await http.get(Uri.parse('$_baseUrl/groep-leden'));
+
+    if (response.statusCode == 200) {
+      final List<dynamic> data = json.decode(response.body);
+      return data.map((json) => UserModel.fromJson(json)).toList();
+    } else {
+      throw Exception('Fout bij ophalen groepsleden');
+    }
+  }
+
+  static Future<void> approveUser(int userId) async {
+    final response = await http.post(
+      Uri.parse('$_baseUrl/approve/$userId'),
+    );
+    if (response.statusCode != 200) {
+      throw Exception('Gebruiker goedkeuren mislukt');
+    }
+  }
+
+  static Future<void> makeAdmin(int userId) async {
+    final response = await http.post(
+      Uri.parse('$_baseUrl/make-admin/$userId'),
+    );
+    if (response.statusCode != 200) {
+      throw Exception('Beheerder maken mislukt');
+    }
+  }
+
+  static Future<bool> updateUser({
+    required int userId,
+    required String name,
+    required String address,
+    required String pin,
+  }) async {
+    final response = await http.put(
+      Uri.parse('$_baseUrl/user/$userId'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'name': name,
+        'address': address,
+        'pin_code': pin,
+      }),
+    );
+    return response.statusCode == 200;
+  }
+
+  // ✅ Huidige gebruiker ophalen via sessie-cookie
+  static Future<UserModel?> haalHuidigeGebruikerOp() async {
+    final prefs = await SharedPreferences.getInstance();
+    final token = prefs.getString('token');
+
+    if (token == null) {
+      print('❌ Geen token opgeslagen');
+      return null;
+    }
+
+    final response = await http.get(
+      Uri.parse('${Env.apiBase}/gebruikers/mij'),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $token',
+      },
+    );
+
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body);
+      return UserModel.fromJson(data);
+    } else {
+      print('❌ Fout bij ophalen gebruiker: ${response.statusCode}');
+      return null;
+    }
+  }
+  
+  static Future<int?> getUserId() async {
+    final gebruiker = await haalHuidigeGebruikerOp();
+    return gebruiker?.id;
+  }
+
+}

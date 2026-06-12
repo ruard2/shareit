@@ -1,0 +1,837 @@
+// lib/screens/pending_actions_screen.dart
+
+import 'dart:convert';
+import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+import 'conversation_screen.dart';
+import '../env.dart';
+
+class PendingActionsScreen extends StatefulWidget {
+  const PendingActionsScreen({super.key});
+
+  @override
+  State<PendingActionsScreen> createState() => _PendingActionsScreenState();
+}
+
+class _PendingActionsScreenState extends State<PendingActionsScreen> {
+  static const _baseUrl = '${Env.apiBase}';
+
+  List<dynamic> _borrowRequests = [];
+  List<dynamic> _userApprovals = [];
+  List<dynamic> _itemRequests = [];
+  List<dynamic> _returnRequests = [];
+  List<_PendingJoinRequest> _joinRequests = [];
+  List<Map<String, dynamic>> _unreadNotifications = [];
+
+  bool _loading = true;
+  String? _error;
+
+  Future<String?> _getSessionId() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString('session_id');
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _loadAll();
+  }
+
+  Future<void> _loadAll() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+
+    List<dynamic> borrowRequests = [];
+    List<dynamic> userApprovals = [];
+    List<dynamic> itemRequests = [];
+    List<dynamic> returnRequests = [];
+    List<_PendingJoinRequest> joinRequests = [];
+    List<Map<String, dynamic>> unreadNotifications = [];
+
+    try {
+      final sessionId = await _getSessionId();
+      if (sessionId == null) {
+        setState(() {
+          _loading = false;
+          _error = 'Niet ingelogd';
+        });
+        return;
+      }
+      final headers = {'cookie': 'session_id=$sessionId'};
+
+      // 1) Borrow requests (admin)
+      var resp = await http.get(Uri.parse('$_baseUrl/requests/pending'),
+          headers: headers);
+      debugPrint('GET /requests/pending -> ${resp.statusCode}');
+      if (resp.statusCode == 200) {
+        borrowRequests = _safeJsonList(resp.body) ?? [];
+      }
+
+      // 2) Pending users (admin)
+      resp = await http.get(Uri.parse('$_baseUrl/users/pending'),
+          headers: headers);
+      debugPrint('GET /users/pending -> ${resp.statusCode}');
+      if (resp.statusCode == 200) {
+        userApprovals = _safeJsonList(resp.body) ?? [];
+      }
+
+      // 3) Gratis-ophaalverzoeken (owner)
+      resp = await http.get(Uri.parse('$_baseUrl/gebruiker/verzoeken/incoming'),
+          headers: headers);
+      debugPrint('GET /gebruiker/verzoeken/incoming -> ${resp.statusCode}');
+      if (resp.statusCode == 200) {
+        itemRequests = _safeJsonList(resp.body) ?? [];
+      }
+
+      // 4) Return-requests (owner + admin)
+      resp = await http.get(Uri.parse('$_baseUrl/requests/return/pending'),
+          headers: headers);
+      debugPrint('GET /requests/return/pending -> ${resp.statusCode}');
+      if (resp.statusCode == 200) {
+        returnRequests = _safeJsonList(resp.body) ?? [];
+      }
+
+      // 5) Notifications (join + overige ongelezen)
+      resp = await http.get(Uri.parse('$_baseUrl/notifications'),
+          headers: headers);
+      debugPrint('GET /notifications -> ${resp.statusCode}');
+      if (resp.statusCode == 200) {
+        final list = _safeJsonList(resp.body) ?? [];
+
+        // 5a) join‐requests uit notifications
+        joinRequests = list
+            .map<_PendingJoinRequest?>(
+                (n) => _PendingJoinRequest.tryFromNotif(n))
+            .whereType<_PendingJoinRequest>()
+            .toList();
+
+        // 5b) overige ongelezen (deze tellen mee in /notifications/count en waren niet zichtbaar)
+        unreadNotifications = list
+            .whereType<Map>()
+            .map((m) => m.cast<String, dynamic>())
+            .where((m) {
+          final type = (m['type'] ?? '').toString();
+          final readAt = m['read_at'];
+          final isUnread = readAt == null || readAt.toString().isEmpty;
+          return isUnread && type != 'group_join_request';
+        }).toList();
+      }
+    } catch (e) {
+      _error = 'Ophalen mislukt: $e';
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _borrowRequests = borrowRequests;
+      _userApprovals = userApprovals;
+      _itemRequests = itemRequests;
+      _returnRequests = returnRequests;
+      _joinRequests = joinRequests;
+      _unreadNotifications = unreadNotifications;
+      _loading = false;
+    });
+  }
+
+  List<dynamic>? _safeJsonList(String body) {
+    try {
+      final parsed = jsonDecode(body);
+      if (parsed is List) return parsed;
+      if (parsed is Map && parsed['data'] is List) {
+        return List<dynamic>.from(parsed['data'] as List);
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _decideBorrow(int id, bool approve) async {
+    final sessionId = await _getSessionId();
+    if (sessionId == null) return;
+    final resp = await http.post(
+      Uri.parse('$_baseUrl/requests/$id/decision'),
+      headers: {
+        'cookie': 'session_id=$sessionId',
+        'content-type': 'application/json'
+      },
+      body: jsonEncode({'approved': approve}),
+    );
+    debugPrint('POST /requests/$id/decision -> ${resp.statusCode}');
+    _loadAll();
+  }
+
+  Future<void> _decideUser(int id, bool approve) async {
+    final sessionId = await _getSessionId();
+    if (sessionId == null) return;
+    final path = approve ? '/users/approve/$id' : '/users/deny/$id';
+    final resp = await http.post(
+      Uri.parse('$_baseUrl$path'),
+      headers: {'cookie': 'session_id=$sessionId'},
+    );
+    debugPrint('POST $path -> ${resp.statusCode}');
+    _loadAll();
+  }
+
+  Future<void> _respondItemRequest(int id) async {
+    final decision = await showDialog<String>(
+      context: context,
+      builder: (_) => SimpleDialog(
+        title: const Text('Beantwoord aanvraag'),
+        children: [
+          SimpleDialogOption(
+            child: const Text('Accepteer'),
+            onPressed: () => Navigator.pop(context, 'accept'),
+          ),
+          SimpleDialogOption(
+            child: const Text('Weiger'),
+            onPressed: () => Navigator.pop(context, 'deny'),
+          ),
+        ],
+      ),
+    );
+    if (decision == null) return;
+
+    final sessionId = await _getSessionId();
+    if (sessionId == null) return;
+    final resp = await http.post(
+      Uri.parse('$_baseUrl/gebruiker/verzoeken/$id/respond'),
+      headers: {
+        'cookie': 'session_id=$sessionId',
+        'content-type': 'application/json'
+      },
+      body: jsonEncode({'decision': decision}),
+    );
+    debugPrint('POST /gebruiker/verzoeken/$id/respond -> ${resp.statusCode}');
+    _loadAll();
+  }
+
+  Future<void> _decideReturn(int id, bool approve) async {
+    final sessionId = await _getSessionId();
+    if (sessionId == null) return;
+    final resp = await http.post(
+      Uri.parse('$_baseUrl/requests/$id/return/decision'),
+      headers: {
+        'cookie': 'session_id=$sessionId',
+        'content-type': 'application/json'
+      },
+      body: jsonEncode({'approve': approve}),
+    );
+    debugPrint('POST /requests/$id/return/decision -> ${resp.statusCode}');
+    _loadAll();
+  }
+
+  Future<void> _approveJoin(_PendingJoinRequest r) async {
+    final sessionId = await _getSessionId();
+    if (sessionId == null) return;
+
+    var resp = await http.post(
+      Uri.parse('$_baseUrl/groups/${r.groupId}/join-request/decision'),
+      headers: {
+        'cookie': 'session_id=$sessionId',
+        'content-type': 'application/json'
+      },
+      body: jsonEncode({'requester_id': r.requesterId, 'approve': true}),
+    );
+    if (resp.statusCode < 200 || resp.statusCode >= 300) {
+      resp = await http.post(
+        Uri.parse('$_baseUrl/groups/${r.groupId}/members/${r.requesterId}'),
+        headers: {'cookie': 'session_id=$sessionId'},
+      );
+    }
+    _snack(resp.statusCode >= 200 && resp.statusCode < 300
+        ? 'Lid toegevoegd'
+        : 'Toevoegen mislukt (${resp.statusCode})');
+    _loadAll();
+  }
+
+  Future<void> _denyJoin(_PendingJoinRequest r) async {
+    final sessionId = await _getSessionId();
+    if (sessionId == null) return;
+
+    final resp = await http.post(
+      Uri.parse('$_baseUrl/groups/${r.groupId}/join-request/decision'),
+      headers: {
+        'cookie': 'session_id=$sessionId',
+        'content-type': 'application/json'
+      },
+      body: jsonEncode({'requester_id': r.requesterId, 'approve': false}),
+    );
+    _snack(resp.statusCode >= 200 && resp.statusCode < 300
+        ? 'Verzoek geweigerd'
+        : 'Weigeren mislukt (${resp.statusCode})');
+    _loadAll();
+  }
+
+  Future<void> _markNotifRead(int notifId) async {
+    final sessionId = await _getSessionId();
+    if (sessionId == null) return;
+    final resp = await http.post(
+      Uri.parse('$_baseUrl/notifications/$notifId/read'),
+      headers: {'cookie': 'session_id=$sessionId'},
+    );
+    debugPrint('POST /notifications/$notifId/read -> ${resp.statusCode}');
+    _loadAll();
+  }
+
+  void _snack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  String _prettyNotifTitle(Map<String, dynamic> n) {
+    final type = (n['type'] ?? '').toString();
+    switch (type) {
+      case 'group_removal':
+        return 'Uit groep verwijderd';
+      default:
+        return type.isEmpty ? 'Notificatie' : type;
+    }
+  }
+
+  String _prettyNotifBody(Map<String, dynamic> n) {
+    // payload kan string of map zijn
+    dynamic p = n['payload'];
+    Map<String, dynamic> payload = {};
+    if (p is String) {
+      try {
+        final d = jsonDecode(p);
+        if (d is Map) payload = d.cast<String, dynamic>();
+      } catch (_) {}
+    } else if (p is Map) {
+      payload = p.cast<String, dynamic>();
+    }
+
+    final type = (n['type'] ?? '').toString();
+    if (type == 'group_removal') {
+      final gname = (payload['group_name'] ?? 'een groep').toString();
+      return 'Je bent verwijderd uit $gname.';
+    }
+    if (payload.isNotEmpty) {
+      return payload.entries.map((e) => '${e.key}: ${e.value}').join(' • ');
+    }
+    return '';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Pending Actions')),
+        body: const Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    final allEmpty = _borrowRequests.isEmpty &&
+        _userApprovals.isEmpty &&
+        _itemRequests.isEmpty &&
+        _returnRequests.isEmpty &&
+        _joinRequests.isEmpty &&
+        _unreadNotifications.isEmpty;
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('Pending Actions')),
+      body: RefreshIndicator(
+        onRefresh: _loadAll,
+        child: ListView(
+          padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+          children: [
+            if (_error != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 8, bottom: 16),
+                child: Text(
+                  _error!,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+              ),
+
+            // 0) Groepsverzoeken (join)
+            if (_joinRequests.isNotEmpty) ...[
+              _sectionHeader('Groepsverzoeken'),
+              for (final r in _joinRequests)
+                Card(
+                  margin: const EdgeInsets.symmetric(vertical: 8),
+                  child: SizedBox(
+                    height:
+                        (r.message == null || r.message!.isEmpty) ? 130 : 160,
+                    child: Stack(
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 16, 60, 48),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                '${r.requesterName ?? 'Onbekend'} wil lid worden van ${r.groupName}',
+                                style: const TextStyle(
+                                    fontSize: 16, fontWeight: FontWeight.bold),
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                  'Gebruiker-ID: ${r.requesterId} • Groep-ID: ${r.groupId}'),
+                              if (r.message != null &&
+                                  r.message!.isNotEmpty) ...[
+                                const SizedBox(height: 8),
+                                Text('Bericht: ${r.message}'),
+                              ],
+                            ],
+                          ),
+                        ),
+                        Positioned(
+                          top: 12,
+                          right: 12,
+                          child: IconButton(
+                            icon: const Icon(Icons.mail_outline),
+                            tooltip: 'Bericht sturen',
+                            onPressed: () {
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => ConversationScreen(
+                                    withUserId: r.requesterId,
+                                    withUserName: r.requesterName ?? 'Onbekend',
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                        Positioned(
+                          bottom: 8,
+                          left: 32,
+                          right: 32,
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              IconButton(
+                                iconSize: 28,
+                                icon: const Icon(Icons.check),
+                                color: Colors.green,
+                                onPressed: () => _approveJoin(r),
+                              ),
+                              IconButton(
+                                iconSize: 28,
+                                icon: const Icon(Icons.close),
+                                color: Colors.red,
+                                onPressed: () => _denyJoin(r),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+            ],
+
+            // 1) Leenverzoeken
+            if (_borrowRequests.isNotEmpty) ...[
+              _sectionHeader('Leenverzoeken'),
+              for (var r in _borrowRequests)
+                Card(
+                  margin: const EdgeInsets.symmetric(vertical: 8),
+                  child: SizedBox(
+                    height: 160,
+                    child: Stack(
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 16, 60, 48),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Item ${r['item_id']} – verzoek van ${r['requester_name'] ?? r['requester_id']}',
+                                style: const TextStyle(
+                                    fontSize: 16, fontWeight: FontWeight.bold),
+                              ),
+                              const SizedBox(height: 8),
+                              Text('Bericht: ${r['message'] ?? "-"}'),
+                            ],
+                          ),
+                        ),
+                        Positioned(
+                          top: 12,
+                          right: 32,
+                          child: IconButton(
+                            icon: const Icon(Icons.mail_outline),
+                            tooltip: 'Bericht sturen',
+                            onPressed: () {
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => ConversationScreen(
+                                    withUserId: r['requester_id'] as int,
+                                    withUserName:
+                                        r['requester_name'] as String? ??
+                                            'Onbekend',
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                        Positioned(
+                          bottom: 8,
+                          left: 32,
+                          right: 32,
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              IconButton(
+                                  iconSize: 28,
+                                  icon: const Icon(Icons.check),
+                                  color: Colors.green,
+                                  onPressed: () =>
+                                      _decideBorrow(r['id'], true)),
+                              IconButton(
+                                  iconSize: 28,
+                                  icon: const Icon(Icons.close),
+                                  color: Colors.red,
+                                  onPressed: () =>
+                                      _decideBorrow(r['id'], false)),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+            ],
+
+            // 2) Nieuwe gebruikers
+            if (_userApprovals.isNotEmpty) ...[
+              _sectionHeader('Nieuwe gebruikers'),
+              for (var u in _userApprovals)
+                Card(
+                  margin: const EdgeInsets.symmetric(vertical: 8),
+                  child: SizedBox(
+                    height: 160,
+                    child: Stack(
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 16, 60, 48),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(u['name'],
+                                  style: const TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.bold)),
+                              const SizedBox(height: 8),
+                              Text(u['email'] ?? ''),
+                            ],
+                          ),
+                        ),
+                        Positioned(
+                          top: 12,
+                          right: 32,
+                          child: IconButton(
+                            icon: const Icon(Icons.mail_outline),
+                            tooltip: 'Bericht sturen',
+                            onPressed: () {
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => ConversationScreen(
+                                    withUserId: u['id'] as int,
+                                    withUserName: u['name'] as String,
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                        Positioned(
+                          bottom: 8,
+                          left: 32,
+                          right: 32,
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              IconButton(
+                                  iconSize: 28,
+                                  icon: const Icon(Icons.check),
+                                  color: Colors.green,
+                                  onPressed: () => _decideUser(u['id'], true)),
+                              IconButton(
+                                  iconSize: 28,
+                                  icon: const Icon(Icons.close),
+                                  color: Colors.red,
+                                  onPressed: () => _decideUser(u['id'], false)),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+            ],
+
+            // 3) Gratis-ophaalverzoeken
+            if (_itemRequests.isNotEmpty) ...[
+              _sectionHeader('Gratis-ophaalverzoeken'),
+              for (var ir in _itemRequests)
+                Card(
+                  margin: const EdgeInsets.symmetric(vertical: 8),
+                  child: SizedBox(
+                    height: 160,
+                    child: Stack(
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 16, 60, 48),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text('Gezocht: ${ir['term']}',
+                                  style: const TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.bold)),
+                              const SizedBox(height: 8),
+                              Text('Opmerkingen: ${ir['comment'] ?? "-"}'),
+                            ],
+                          ),
+                        ),
+                        Positioned(
+                          top: 12,
+                          right: 12,
+                          child: IconButton(
+                            icon: const Icon(Icons.mail_outline),
+                            tooltip: 'Bericht sturen',
+                            onPressed: () {
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => ConversationScreen(
+                                    withUserId: ir['requester_id'] as int,
+                                    withUserName:
+                                        ir['requester_name'] as String? ??
+                                            'Onbekend',
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                        Positioned(
+                          bottom: 8,
+                          left: 32,
+                          right: 32,
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              IconButton(
+                                  iconSize: 28,
+                                  icon: const Icon(Icons.check),
+                                  color: Colors.green,
+                                  onPressed: () =>
+                                      _respondItemRequest(ir['id'])),
+                              IconButton(
+                                  iconSize: 28,
+                                  icon: const Icon(Icons.close),
+                                  color: Colors.red,
+                                  onPressed: () =>
+                                      _respondItemRequest(ir['id'])),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+            ],
+
+            // 4) Return-verzoeken
+            if (_returnRequests.isNotEmpty) ...[
+              _sectionHeader('Return-verzoeken'),
+              for (var rr in _returnRequests)
+                Card(
+                  margin: const EdgeInsets.symmetric(vertical: 8),
+                  child: SizedBox(
+                    height: 160,
+                    child: Stack(
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 16, 60, 48),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text('Item ${rr['item_id']} terugbrengen',
+                                  style: const TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.bold)),
+                              const SizedBox(height: 8),
+                              Text(
+                                  'Aangevraagd door ${rr['requester_name'] ?? rr['requester_id']}'),
+                            ],
+                          ),
+                        ),
+                        Positioned(
+                          top: 12,
+                          right: 32,
+                          child: IconButton(
+                            icon: const Icon(Icons.mail_outline),
+                            tooltip: 'Bericht sturen',
+                            onPressed: () {
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => ConversationScreen(
+                                    withUserId: rr['requester_id'] as int,
+                                    withUserName:
+                                        rr['requester_name'] as String? ??
+                                            'Onbekend',
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                        Positioned(
+                          bottom: 8,
+                          left: 32,
+                          right: 32,
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              IconButton(
+                                  iconSize: 28,
+                                  icon: const Icon(Icons.check),
+                                  color: Colors.green,
+                                  onPressed: () =>
+                                      _decideReturn(rr['id'], true)),
+                              IconButton(
+                                  iconSize: 28,
+                                  icon: const Icon(Icons.close),
+                                  color: Colors.red,
+                                  onPressed: () =>
+                                      _decideReturn(rr['id'], false)),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+            ],
+
+            // 5) Overige ongelezen notificaties (tellen mee op het belletje)
+            if (_unreadNotifications.isNotEmpty) ...[
+              _sectionHeader('Notificaties'),
+              for (final n in _unreadNotifications)
+                Card(
+                  margin: const EdgeInsets.symmetric(vertical: 8),
+                  child: ListTile(
+                    title: Text(
+                      _prettyNotifTitle(n),
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    subtitle: Text(_prettyNotifBody(n)),
+                    trailing: IconButton(
+                      icon: const Icon(Icons.done_all),
+                      tooltip: 'Markeer als gelezen',
+                      onPressed: () => _markNotifRead((n['id'] as num).toInt()),
+                    ),
+                  ),
+                ),
+            ],
+
+            if (allEmpty)
+              const Padding(
+                padding: EdgeInsets.only(top: 50),
+                child: Center(
+                  child: Text(
+                    'Geen verzoeken om te vertonen',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _sectionHeader(String title) => Padding(
+        padding: const EdgeInsets.fromLTRB(0, 24, 0, 8),
+        child: Text(title,
+            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+      );
+}
+
+/// Robuuste parser voor join-notificaties.
+class _PendingJoinRequest {
+  final int notifId;
+  final int groupId;
+  final String groupName;
+  final int requesterId;
+  final String? requesterName;
+  final String? message;
+
+  _PendingJoinRequest({
+    required this.notifId,
+    required this.groupId,
+    required this.groupName,
+    required this.requesterId,
+    this.requesterName,
+    this.message,
+  });
+
+  static _PendingJoinRequest? tryFromNotif(dynamic n) {
+    if (n is! Map) return null;
+    final map = n.cast<String, dynamic>();
+
+    final type = (map['type'] ?? '').toString();
+    if (type != 'group_join_request') return null;
+
+    final rawPayload = map['payload'];
+    Map<String, dynamic> p = {};
+    if (rawPayload is String) {
+      try {
+        final decoded = jsonDecode(rawPayload);
+        if (decoded is Map) p = decoded.cast<String, dynamic>();
+      } catch (_) {
+        return null;
+      }
+    } else if (rawPayload is Map) {
+      p = rawPayload.cast<String, dynamic>();
+    } else {
+      return null;
+    }
+
+    int? groupId = _asInt(p['group_id'] ?? map['group_id']);
+    int? requesterId = _asInt(p['requester_id'] ??
+        p['user_id'] ??
+        map['requester_id'] ??
+        map['user_id']);
+    if (groupId == null || requesterId == null) return null;
+
+    final groupName =
+        (p['group_name'] ?? map['group_name'] ?? 'Onbekende groep').toString();
+    final requesterName = (p['requester_name'] ??
+            p['user_name'] ??
+            p['name'] ??
+            map['requester_name'] ??
+            map['user_name'])
+        ?.toString();
+    final message = (p['message'] ?? map['message'])?.toString();
+    final notifId = _asInt(map['id']) ?? 0;
+
+    return _PendingJoinRequest(
+      notifId: notifId,
+      groupId: groupId,
+      groupName: groupName,
+      requesterId: requesterId,
+      requesterName: requesterName,
+      message: message,
+    );
+  }
+
+  static int? _asInt(dynamic v) {
+    if (v is int) return v;
+    if (v is double) return v.toInt();
+    if (v is String) return int.tryParse(v);
+    return null;
+  }
+}

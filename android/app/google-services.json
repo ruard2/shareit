@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1041613078967",
+    "project_id": "free-your-stuff-fd9a3",
+    "storage_bucket": "free-your-stuff-fd9a3.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1041613078967:android:e34ba8a3ca0165a82aa832",
+        "android_client_info": {
+          "package_name": "com.example.spullen_delen"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD0Pfcz4CT2dFIXLvSmbL5RKTOqf0imbpk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -1,0 +1,497 @@
+import 'package:flutter/material.dart';
+import '../utils/api_helper.dart';
+import 'dart:convert';
+
+class ZoekScherm extends StatefulWidget {
+  const ZoekScherm({super.key});
+
+  @override
+  State<ZoekScherm> createState() => _ZoekSchermState();
+}
+
+class _ZoekSchermState extends State<ZoekScherm>
+    with SingleTickerProviderStateMixin {
+  final TextEditingController _zoekController = TextEditingController();
+  final TextEditingController _commentController = TextEditingController();
+
+  List<Map<String, dynamic>> _alleItems = [];
+  List<Map<String, dynamic>> _beschikbareItems = [];
+  List<String> _suggestions = [];
+  bool _checkedSpelling = false;
+
+  int? _currentUserId;
+  bool _meLoaded = false;
+
+  late TabController _tabController;
+
+  static const _baseUrl = 'http://10.0.2.2:8000';
+
+  @override
+  void initState() {
+    super.initState();
+    _tabController = TabController(length: 2, vsync: this);
+    _loadCurrentUser().then((_) => _zoekSpullen(''));
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    _zoekController.dispose();
+    _commentController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadCurrentUser() async {
+    // Probeer /me, val terug op /gebruiker/me (beide bestaan vaak in deze codebases)
+    Future<Map<String, dynamic>?> tryFetch(String path) async {
+      final resp = await ApiHelper.get(path);
+      if (resp.statusCode == 200) {
+        try {
+          final obj = jsonDecode(resp.body);
+          if (obj is Map<String, dynamic>) return obj;
+        } catch (_) {}
+      }
+      return null;
+    }
+
+    Map<String, dynamic>? me = await tryFetch('/me');
+    me ??= await tryFetch('/gebruiker/me');
+
+    setState(() {
+      _currentUserId = (me?['id'] is int) ? me!['id'] as int : null;
+      _meLoaded = true;
+    });
+  }
+
+  Future<void> _zoekSpullen(String zoekterm) async {
+    // wacht tot user geladen is om zeker eigen items te kunnen filteren
+    if (!_meLoaded) return;
+
+    setState(() {
+      _checkedSpelling = false;
+      _suggestions = [];
+      _alleItems = [];
+      _beschikbareItems = [];
+    });
+
+    final path = zoekterm.trim().isEmpty
+        ? '/items/'
+        : '/items/search?q=${Uri.encodeQueryComponent(zoekterm)}';
+
+    final resp = await ApiHelper.get(path);
+    if (resp.statusCode == 200) {
+      final List data = jsonDecode(resp.body) as List;
+
+      // raw list
+      final alle = data
+          .whereType<Map<String, dynamic>>()
+          // **Filter eigen items altijd weg**
+          .where((m) => _currentUserId == null
+              ? false
+              : (m['owner_id'] != _currentUserId))
+          .toList();
+
+      final beschikbaar =
+          alle.where((m) => (m['status'] ?? '') == 'free').toList();
+
+      setState(() {
+        _alleItems = alle;
+        _beschikbareItems = beschikbaar;
+      });
+
+      if (alle.isEmpty && zoekterm.trim().isNotEmpty) {
+        await _checkSpelling(zoekterm.trim());
+      }
+    } else {
+      setState(() {
+        _alleItems = [];
+        _beschikbareItems = [];
+      });
+    }
+  }
+
+  Future<void> _checkSpelling(String term) async {
+    final resp = await ApiHelper.get(
+        '/spellcheck?term=${Uri.encodeQueryComponent(term)}');
+    if (resp.statusCode == 200) {
+      final List suggestions = jsonDecode(resp.body) as List;
+      setState(() {
+        _suggestions = suggestions.map((s) => s.toString()).toList();
+        _checkedSpelling = true;
+      });
+    } else {
+      setState(() => _checkedSpelling = true);
+    }
+  }
+
+  Future<void> _showRequestDialogForMissing(String term) async {
+    _commentController.clear();
+    return showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Verzoek item'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Term: $term'),
+            TextField(
+              controller: _commentController,
+              decoration: const InputDecoration(labelText: 'Opmerkingen'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Annuleer'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              final resp = await ApiHelper.post(
+                '/gebruiker/verzoeken',
+                {
+                  'term': term,
+                  'comment': _commentController.text.trim(),
+                },
+              );
+              Navigator.of(context).pop();
+              if (resp.statusCode == 200) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Verzoek verstuurd!')),
+                );
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Kon verzoek niet versturen')),
+                );
+              }
+            },
+            child: const Text('Verstuur'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<String?> _haalEigenaarNaam(int groupId, int ownerId) async {
+    // Bestaand endpoint met groepsleden
+    final resp = await ApiHelper.get('/gebruikers/groep/$groupId');
+    if (resp.statusCode == 200) {
+      final List list = jsonDecode(resp.body) as List;
+      for (final u in list) {
+        if (u is Map && u['id'] == ownerId) {
+          return (u['name'] as String?) ?? 'de eigenaar';
+        }
+      }
+    }
+    return null;
+  }
+
+  Future<void> _toonInteressePopupVoorUitgeleend(
+      Map<String, dynamic> item) async {
+    final naam = await _haalEigenaarNaam(
+        item['group_id'] as int, item['owner_id'] as int);
+    final eigenaar = naam ?? 'de eigenaar';
+
+    return showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Item niet beschikbaar'),
+        content: Text(
+          'Item is op dit moment uitgeleend.\n\n'
+          'Wil je $eigenaar laten weten dat je dit graag wil lenen?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Nee'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              final body = {
+                'term': item['name'] ?? 'Onbekend',
+                'comment': 'Interesse in dit item zodra beschikbaar',
+                'item_id': item['id'] as int,
+              };
+              final resp = await ApiHelper.post('/gebruiker/verzoeken', body);
+              Navigator.of(context).pop();
+              if (resp.statusCode == 200) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                      content: Text(
+                          'Interesse gemeld — de eigenaar krijgt dit te zien.')),
+                );
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('Melden mislukt: ${resp.statusCode}')),
+                );
+              }
+            },
+            child: const Text('Ja, laat weten'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _openItem(Map<String, dynamic> item) {
+    if ((item['status'] ?? '') == 'free') {
+      _showItemDialog(item);
+      return;
+    }
+    _toonInteressePopupVoorUitgeleend(item);
+  }
+
+  void _showItemDialog(Map<String, dynamic> item) {
+    // Toon foto + naam + info + leenkosten + eigenaar
+    showDialog<void>(
+      context: context,
+      builder: (context) {
+        final futureOwnerName =
+            _haalEigenaarNaam(item['group_id'] as int, item['owner_id'] as int);
+        return Dialog(
+          insetPadding: const EdgeInsets.all(16),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Align(
+                  alignment: Alignment.topRight,
+                  child: IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: () => Navigator.of(context).pop(),
+                  ),
+                ),
+                if (item['image_path'] != null) ...[
+                  Image.network(
+                    '$_baseUrl${item['image_path']}',
+                    height: 200,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                  ),
+                  const SizedBox(height: 8),
+                ],
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        item['name'] ?? 'Onbekend',
+                        style: const TextStyle(
+                            fontSize: 20, fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 8),
+                      if ((item['info'] ?? '').toString().trim().isNotEmpty)
+                        Text(item['info']),
+                      if (item['leenkosten'] != null) ...[
+                        const SizedBox(height: 6),
+                        Text('Leenkosten: €${item['leenkosten']}'),
+                      ],
+                      const SizedBox(height: 6),
+                      FutureBuilder<String?>(
+                        future: futureOwnerName,
+                        builder: (context, snapshot) {
+                          final ownerName = snapshot.data;
+                          return Text(
+                            'Eigenaar: ${ownerName ?? 'laden...'}',
+                            style: const TextStyle(fontStyle: FontStyle.italic),
+                          );
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: ElevatedButton(
+                    onPressed: () async {
+                      Navigator.of(context).pop();
+                      final resp = await ApiHelper.post(
+                          '/items/${item['id']}/borrow', {});
+                      if (resp.statusCode == 200) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                              content: Text(
+                                  'Leenverzoek verstuurd voor ${item['name']}')),
+                        );
+                        _zoekSpullen(_zoekController.text);
+                      } else {
+                        String detail;
+                        try {
+                          final error = jsonDecode(resp.body);
+                          detail = error['detail']?.toString() ??
+                              '${resp.statusCode}';
+                        } catch (_) {
+                          detail = '${resp.statusCode}';
+                        }
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('Kon niet lenen: $detail')),
+                        );
+                      }
+                    },
+                    child: const Text('Leen'),
+                  ),
+                ),
+                const SizedBox(height: 16),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final term = _zoekController.text.trim();
+    final filteredSuggestions = _suggestions
+        .where((s) => s.toLowerCase() != term.toLowerCase())
+        .toList();
+
+    final cs = Theme.of(context).colorScheme;
+    final currentList =
+        _tabController.index == 0 ? _beschikbareItems : _alleItems;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Zoek spullen'),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(56),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+            child: Container(
+              height: 40,
+              decoration: BoxDecoration(
+                color: cs.surfaceVariant,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: TabBar(
+                controller: _tabController,
+                indicator: BoxDecoration(
+                  color: cs.primary,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                indicatorSize: TabBarIndicatorSize.tab,
+                dividerColor: Colors.transparent,
+                labelColor: cs.onPrimary,
+                unselectedLabelColor: cs.onSurfaceVariant,
+                labelStyle: const TextStyle(fontWeight: FontWeight.w700),
+                unselectedLabelStyle:
+                    const TextStyle(fontWeight: FontWeight.w700),
+                tabs: const [
+                  Tab(text: 'Beschikbaar'),
+                  Tab(text: 'Alle'),
+                ],
+                onTap: (_) => setState(() {}),
+              ),
+            ),
+          ),
+        ),
+      ),
+      body: !_meLoaded
+          ? const Center(child: CircularProgressIndicator())
+          : Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                children: [
+                  TextField(
+                    controller: _zoekController,
+                    decoration: const InputDecoration(
+                      labelText: 'Zoek naar een item',
+                      prefixIcon: Icon(Icons.search),
+                    ),
+                    onChanged: _zoekSpullen,
+                  ),
+                  const SizedBox(height: 8),
+                  if (currentList.isEmpty &&
+                      term.isNotEmpty &&
+                      _checkedSpelling) ...[
+                    if (filteredSuggestions.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 8),
+                        child: Text(
+                          'Bedoel je: ${filteredSuggestions.join(', ')}',
+                          style: const TextStyle(fontStyle: FontStyle.italic),
+                        ),
+                      )
+                    else
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        child: Column(
+                          children: [
+                            const Text(
+                              'Item niet gevonden. Wil je een verzoek plaatsen?',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(fontStyle: FontStyle.italic),
+                            ),
+                            const SizedBox(height: 8),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                ElevatedButton(
+                                  onPressed: () {
+                                    setState(() => _checkedSpelling = false);
+                                    _showRequestDialogForMissing(term);
+                                  },
+                                  child: const Text('Ja'),
+                                ),
+                                const SizedBox(width: 20),
+                                ElevatedButton(
+                                  onPressed: () {},
+                                  child: const Text('Nee'),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
+                  Expanded(
+                    child: ListView.builder(
+                      itemCount: currentList.length,
+                      itemBuilder: (context, index) {
+                        final item = currentList[index];
+                        final status = (item['status'] ?? '') as String;
+
+                        return ListTile(
+                          leading: (item['image_path'] != null)
+                              ? ClipRRect(
+                                  borderRadius: BorderRadius.circular(6),
+                                  child: Image.network(
+                                    '$_baseUrl${item['image_path']}',
+                                    width: 54,
+                                    height: 54,
+                                    fit: BoxFit.cover,
+                                    errorBuilder: (_, __, ___) =>
+                                        const Icon(Icons.inventory),
+                                  ),
+                                )
+                              : const Icon(Icons.inventory),
+                          title: Text(item['name'] ?? 'Onbekend'),
+                          subtitle: Text(item['info'] ?? ''),
+                          trailing: Text(
+                            status == 'free'
+                                ? 'Beschikbaar'
+                                : (status == 'reserved'
+                                    ? 'Gereserveerd'
+                                    : 'Uitgeleend'),
+                            style: TextStyle(
+                              color:
+                                  status == 'free' ? Colors.green : Colors.grey,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          onTap: () => _openItem(item),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+    );
+  }
+}

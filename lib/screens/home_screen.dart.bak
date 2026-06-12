@@ -1,0 +1,588 @@
+import 'dart:async';
+import 'dart:convert';
+
+import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+
+import 'mijn_spullen_scherm.dart';
+import 'zoek_spullen_scherm.dart';
+import 'groep_beheren_scherm.dart';
+import 'instellingen_scherm.dart';
+import 'info_scherm.dart';
+import 'pending_actions_screen.dart';
+import 'messages_screen.dart';
+import 'beheer_groepsleden_scherm.dart';
+import '../models/item.dart';
+import 'item_detail_scherm.dart';
+import '../env.dart';
+
+class HomeScreen extends StatefulWidget {
+  const HomeScreen({super.key});
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
+  static const _baseUrl = '${Env.apiBase}';
+
+  String gebruikersnaam = '';
+  String quote = '';
+  int beschikbaar = 0;
+  int mijnSpullen = 0;
+  int geleendDoorMij = 0;
+  bool isBeheerder = false;
+  List<dynamic> _myMemberships = [];
+
+  int _pendingCount = 0; // 🔔
+  int _messageCount = 0; // ✉️
+  List<Item> _gratisItems = [];
+
+  Timer? _countsTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+
+    _laadDashboardGegevens();
+    _refreshCounts();
+    _loadGratisItems();
+
+    _countsTimer =
+        Timer.periodic(const Duration(seconds: 20), (_) => _refreshCounts());
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _countsTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _refreshCounts();
+      _laadDashboardGegevens();
+      _loadGratisItems(); // ← toevoegen: ook gratis items verversen bij terugkeer
+    }
+  }
+
+  Future<void> _refreshCounts() async {
+    await Future.wait([_loadPendingCount(), _loadMessageCount()]);
+  }
+
+  Future<String?> _getSessionId() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString('session_id');
+  }
+
+  Future<void> _laadDashboardGegevens() async {
+    try {
+      final sessionId = await _getSessionId();
+      if (sessionId == null) return;
+
+      final userResp = await http.get(
+        Uri.parse('$_baseUrl/gebruikers/mij'),
+        headers: {'cookie': 'session_id=$sessionId'},
+      );
+      final dashResp = await http.get(
+        Uri.parse('$_baseUrl/gebruikers/dashboard'),
+        headers: {'cookie': 'session_id=$sessionId'},
+      );
+      if (userResp.statusCode != 200 || dashResp.statusCode != 200) return;
+
+      final userData = json.decode(userResp.body) as Map<String, dynamic>;
+      final dashData = json.decode(dashResp.body) as Map<String, dynamic>;
+
+      final adminOf = (userData['admin_of_groups'] as List<dynamic>? ?? []);
+      final globalRole = userData['role'] as String? ?? 'user';
+      final memberships = (userData['memberships'] as List<dynamic>? ?? []);
+
+      if (!mounted) return;
+      setState(() {
+        gebruikersnaam = userData['name'] as String? ?? '';
+        _myMemberships = memberships;
+        isBeheerder =
+            adminOf.isNotEmpty || (globalRole.toLowerCase() == 'superuser');
+
+        quote = dashData['quote'] as String? ?? '';
+        beschikbaar = dashData['beschikbaar'] as int? ?? 0;
+        mijnSpullen = dashData['mijn_spullen'] as int? ?? 0;
+        geleendDoorMij = dashData['geleend_door_mij'] as int? ?? 0;
+      });
+    } catch (e) {
+      // ignore: avoid_print
+      print('❌ Fout bij ophalen dashboardgegevens: $e');
+    }
+  }
+
+  Future<void> _loadPendingCount() async {
+    try {
+      final sessionId = await _getSessionId();
+      if (sessionId == null) return;
+
+      // Eén bron van waarheid: backend-aggregator
+      final resp = await http.get(
+        Uri.parse('$_baseUrl/notifications/count'),
+        headers: {'cookie': 'session_id=$sessionId'},
+      );
+
+      if (resp.statusCode == 200) {
+        int count = 0;
+
+        // Backend stuurt een integer terug (plain) of eventueel JSON.
+        // We ondersteunen beide om robuust te zijn.
+        final body = resp.body.trim();
+        try {
+          final asJson = json.decode(body);
+          if (asJson is int) {
+            count = asJson;
+          } else if (asJson is Map && asJson['count'] is int) {
+            count = asJson['count'] as int;
+          } else if (asJson is String) {
+            count = int.tryParse(asJson) ?? 0;
+          } else if (asJson is num) {
+            count = asJson.toInt();
+          }
+        } catch (_) {
+          // Geen JSON? Probeer plain int te parsen.
+          count = int.tryParse(body) ?? 0;
+        }
+
+        if (!mounted) return;
+        setState(() => _pendingCount = count < 0 ? 0 : count);
+      }
+    } catch (e) {
+      // ignore: avoid_print
+      print('❌ Fout bij ophalen pending count: $e');
+    }
+  }
+
+  Future<void> _loadMessageCount() async {
+    try {
+      final sessionId = await _getSessionId();
+      if (sessionId == null) return;
+
+      final resp = await http.get(
+        Uri.parse('$_baseUrl/messages/count'),
+        headers: {'cookie': 'session_id=$sessionId'},
+      );
+
+      if (resp.statusCode == 200) {
+        int parsed = 0;
+        try {
+          final asJson = json.decode(resp.body);
+          if (asJson is Map && asJson['count'] is int) {
+            parsed = asJson['count'] as int;
+          } else if (asJson is String) {
+            parsed = int.tryParse(asJson) ?? 0;
+          } else if (asJson is num) {
+            parsed = asJson.toInt();
+          }
+        } catch (_) {
+          parsed = int.tryParse(resp.body.trim()) ?? 0;
+        }
+        if (!mounted) return;
+        setState(() => _messageCount = parsed);
+      }
+    } catch (e) {
+      // ignore: avoid_print
+      print('❌ Fout bij ophalen message count: $e');
+    }
+  }
+
+  Future<void> _loadGratisItems() async {
+    try {
+      final sessionId = await _getSessionId();
+      if (sessionId == null) return;
+      final resp = await http.get(
+        Uri.parse('$_baseUrl/items/'),
+        headers: {'cookie': 'session_id=$sessionId'},
+      );
+      if (resp.statusCode == 200) {
+        final all = json.decode(resp.body);
+        if (all is List) {
+          final items = all
+              .whereType<Map<String, dynamic>>()
+              .map((j) => Item.fromJson(j))
+              .where((i) {
+            final isGratis = i.leenkosten == null;
+            // Zorg dat je Item-model een 'status' veld heeft (String?).
+            final isVrij = (i.status ?? 'free').toLowerCase() == 'free';
+            return isGratis && isVrij;
+          }).toList();
+          if (!mounted) return;
+          setState(() {
+            _gratisItems = items;
+          });
+        }
+      }
+    } catch (e) {
+      // ignore: avoid_print
+      print('❌ Fout bij ophalen gratis items: $e');
+    }
+  }
+
+  void _openMijnGroep() {
+    if (_myMemberships.length <= 1) {
+      final gid = _myMemberships.isEmpty
+          ? 0
+          : (_myMemberships.first['group_id'] as int? ?? 0);
+      Navigator.push(
+          context,
+          MaterialPageRoute(
+              builder: (_) => BeheerGroepsledenScherm(groupId: gid))).then((_) {
+        _laadDashboardGegevens();
+        _refreshCounts();
+      });
+    } else {
+      showDialog(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('Kies een groep'),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: ListView.builder(
+              shrinkWrap: true,
+              itemCount: _myMemberships.length,
+              itemBuilder: (ctx, i) {
+                final grp = _myMemberships[i] as Map<String, dynamic>;
+                final name = grp['name'] as String? ?? 'Onbekend';
+                final id = grp['group_id'] as int? ?? 0;
+                return ListTile(
+                  title: Text(name),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                                builder: (_) =>
+                                    BeheerGroepsledenScherm(groupId: id)))
+                        .then((_) {
+                      _laadDashboardGegevens();
+                      _refreshCounts();
+                    });
+                  },
+                );
+              },
+            ),
+          ),
+        ),
+      );
+    }
+  }
+
+  Widget _buildBadge(
+      {required int count,
+      required ColorScheme cs,
+      EdgeInsetsGeometry padding = const EdgeInsets.all(2)}) {
+    if (count <= 0) return const SizedBox.shrink();
+    return Positioned(
+      right: 8,
+      top: 8,
+      child: Container(
+        padding: padding,
+        decoration: BoxDecoration(
+            color: cs.primary,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: Colors.white, width: 1)),
+        constraints: const BoxConstraints(minWidth: 18, minHeight: 18),
+        child: const Center(
+            child: Text(
+          '',
+          // Tekst vullen we hieronder (we willen consistente style). Wordt direct gezet in child.
+        )),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final textStyle = Theme.of(context)
+        .textTheme
+        .titleMedium
+        ?.copyWith(fontWeight: FontWeight.w600);
+
+    return Scaffold(
+      backgroundColor: cs.surfaceContainerHighest,
+      appBar: AppBar(
+        elevation: 0,
+        title: Text('Hallo, $gebruikersnaam!',
+            style: Theme.of(context)
+                .textTheme
+                .titleLarge
+                ?.copyWith(color: Colors.white)),
+        actions: [
+          // 🔔 Pending actions
+          Stack(
+            clipBehavior: Clip.none,
+            fit: StackFit.passthrough,
+            children: [
+              IconButton(
+                icon: const Icon(Icons.notifications_outlined),
+                tooltip: 'Pending actions',
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => const PendingActionsScreen()),
+                  ).then((_) => _refreshCounts());
+                },
+              ),
+              Positioned(
+                right: 8,
+                top: 8,
+                child: IgnorePointer(
+                  child: _pendingCount > 0
+                      ? Container(
+                          padding: const EdgeInsets.all(2),
+                          decoration: BoxDecoration(
+                            color: Theme.of(context).colorScheme.primary,
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: Colors.white, width: 1),
+                          ),
+                          constraints:
+                              const BoxConstraints(minWidth: 18, minHeight: 18),
+                          child: Center(
+                            child: Text(
+                              '$_pendingCount',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w700,
+                                height: 1.0,
+                              ),
+                            ),
+                          ),
+                        )
+                      : const SizedBox.shrink(),
+                ),
+              ),
+            ],
+          ),
+
+          // ✉️ Messages
+          Stack(
+            clipBehavior: Clip.none,
+            fit: StackFit.passthrough,
+            children: [
+              IconButton(
+                icon: const Icon(Icons.mail_outline),
+                tooltip: 'Berichten',
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const MessagesScreen()),
+                  ).then((_) => _refreshCounts());
+                },
+              ),
+              Positioned(
+                right: 8,
+                top: 8,
+                child: IgnorePointer(
+                  child: _messageCount > 0
+                      ? Container(
+                          padding: const EdgeInsets.all(2),
+                          decoration: BoxDecoration(
+                            color: Theme.of(context).colorScheme.primary,
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: Colors.white, width: 1),
+                          ),
+                          constraints:
+                              const BoxConstraints(minWidth: 18, minHeight: 18),
+                          child: Center(
+                            child: Text(
+                              '$_messageCount',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w700,
+                                height: 1.0,
+                              ),
+                            ),
+                          ),
+                        )
+                      : const SizedBox.shrink(),
+                ),
+              ),
+            ],
+          ),
+
+          IconButton(
+            icon: const Icon(Icons.info_outline),
+            tooltip: 'Info',
+            onPressed: () => Navigator.push(context,
+                    MaterialPageRoute(builder: (_) => const InfoScherm()))
+                .then((_) => _laadDashboardGegevens()),
+          ),
+          IconButton(
+            icon: const Icon(Icons.settings),
+            tooltip: 'Instellingen',
+            onPressed: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => const InstellingenScherm()))
+                .then((_) => _laadDashboardGegevens()),
+          ),
+        ],
+      ),
+      body: RefreshIndicator(
+        onRefresh: () async {
+          await _laadDashboardGegevens();
+          await _refreshCounts();
+          await _loadGratisItems();
+        },
+        child: ListView(
+          padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
+          children: [
+            // 🔍 Zoek spullen
+            Card(
+              margin: const EdgeInsets.symmetric(vertical: 10),
+              child: ListTile(
+                leading: Icon(Icons.search, color: cs.primary),
+                title: Text('Zoek spullen', style: textStyle),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => Navigator.push(context,
+                        MaterialPageRoute(builder: (_) => const ZoekScherm()))
+                    .then((_) => _laadDashboardGegevens()),
+              ),
+            ),
+
+            // 📦 Mijn spullen
+            Card(
+              margin: const EdgeInsets.symmetric(vertical: 10),
+              child: ListTile(
+                leading: Icon(Icons.inventory, color: cs.primary),
+                title: Text('Mijn spullen', style: textStyle),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                            builder: (_) => const MijnSpullenScherm()))
+                    .then((_) => _laadDashboardGegevens()),
+              ),
+            ),
+
+            // 👥 Mijn groep (alleen voor niet-beheerders)
+            if (!isBeheerder)
+              Card(
+                margin: const EdgeInsets.symmetric(vertical: 10),
+                child: ListTile(
+                  leading: Icon(Icons.group, color: cs.primary),
+                  title: Text('Mijn groep', style: textStyle),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: _openMijnGroep,
+                ),
+              ),
+
+            // 👑 Groep beheren (admins/super)
+            if (isBeheerder)
+              Card(
+                margin: const EdgeInsets.symmetric(vertical: 10),
+                child: ListTile(
+                  leading: Icon(Icons.admin_panel_settings, color: cs.primary),
+                  title: Text('Groep beheren', style: textStyle),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                              builder: (_) => const GroepBeherenScherm()))
+                      .then((_) {
+                    _laadDashboardGegevens();
+                    _refreshCounts();
+                  }),
+                ),
+              ),
+
+            // 🌿 Quote — na de knoppen
+            if (quote.isNotEmpty) ...[
+              const SizedBox(height: 20),
+              Padding(
+                padding: const EdgeInsets.only(bottom: 24),
+                child: Text(
+                  '“$quote”',
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontStyle: FontStyle.italic,
+                        fontWeight: FontWeight.w500,
+                        color: Colors.green[800],
+                      ),
+                ),
+              ),
+            ],
+
+            // 📦 Gratis spullen
+            if (_gratisItems.isNotEmpty) ...[
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Text('Gratis spullen',
+                    style: Theme.of(context).textTheme.titleMedium),
+              ),
+              SizedBox(
+                height: 180,
+                child: PageView.builder(
+                  itemCount: _gratisItems.length,
+                  controller: PageController(viewportFraction: 0.7),
+                  itemBuilder: (ctx, i) {
+                    final item = _gratisItems[i];
+                    return GestureDetector(
+                      onTap: () async {
+                        final changed = await Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => ItemDetailScherm(item: item),
+                          ),
+                        );
+                        if (changed == true) {
+                          await _loadGratisItems();
+                          await _refreshCounts();
+                          await _laadDashboardGegevens();
+                        }
+                      },
+                      child: Card(
+                        clipBehavior: Clip.antiAlias,
+                        child: item.imagePath != null
+                            ? Image.network('$_baseUrl${item.imagePath}',
+                                fit: BoxFit.cover)
+                            : const Center(
+                                child: Icon(Icons.inventory, size: 48)),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+
+            // extra ruimte voor “banner” lager
+            const SizedBox(height: 36),
+
+            // 📊 Stats
+            Center(
+              child: Column(
+                children: [
+                  Text('📦 Beschikbaar: $beschikbaar spullen',
+                      style: Theme.of(context)
+                          .textTheme
+                          .bodyMedium
+                          ?.copyWith(color: Colors.black54)),
+                  const SizedBox(height: 6),
+                  Text(
+                      '🙋‍♂️ Jouw spullen: $mijnSpullen | Geleend: $geleendDoorMij',
+                      style: Theme.of(context)
+                          .textTheme
+                          .bodyMedium
+                          ?.copyWith(color: Colors.black54)),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+          ],
+        ),
+      ),
+    );
+  }
+}

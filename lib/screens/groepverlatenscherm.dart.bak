@@ -1,0 +1,56 @@
+import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+
+class GroepVerlatenScherm extends StatelessWidget {
+  const GroepVerlatenScherm({super.key});
+
+  Future<void> _verlaatGroep(BuildContext context) async {
+    final prefs = await SharedPreferences.getInstance();
+    final userId = prefs.getString('user_id');
+
+    final bevestiging = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Groep verlaten'),
+        content: const Text('Weet je zeker dat je de groep wilt verlaten?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Annuleer')),
+          TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('Verlaat groep')),
+        ],
+      ),
+    );
+
+    if (bevestiging == true && userId != null) {
+      final res = await http.post(
+        Uri.parse('http://10.0.2.2:8000/groep/verlaten'),
+        headers: {'user-id': userId},
+      );
+
+      if (res.statusCode == 200) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Je hebt de groep verlaten.')),
+        );
+        Navigator.pop(context); // terug naar groep beheren scherm
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Verlaten mislukt.')),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Groep verlaten')),
+      body: Center(
+        child: ElevatedButton.icon(
+          icon: const Icon(Icons.logout),
+          label: const Text('Bevestig verlaten groep'),
+          onPressed: () => _verlaatGroep(context),
+        ),
+      ),
+    );
+  }
+}

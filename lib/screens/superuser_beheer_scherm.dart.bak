@@ -1,0 +1,182 @@
+import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+
+class SuperuserBeheerScherm extends StatefulWidget {
+  const SuperuserBeheerScherm({super.key});
+
+  @override
+  State<SuperuserBeheerScherm> createState() => _SuperuserBeheerSchermState();
+}
+
+class _SuperuserBeheerSchermState extends State<SuperuserBeheerScherm> {
+  List<dynamic> alleGebruikers = [];
+  List<dynamic> gefilterdeGebruikers = [];
+  TextEditingController zoekController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _laadGebruikers();
+  }
+
+  Future<void> _laadGebruikers() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final userId = prefs.getString('user_id');
+
+      final response = await http.get(
+        Uri.parse('http://10.0.2.2:8000/gebruikers/alle'),
+        headers: {
+          'Content-Type': 'application/json',
+          'user-id': userId ?? '',
+        },
+      );
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        setState(() {
+          alleGebruikers = data;
+          gefilterdeGebruikers = data;
+        });
+      } else {
+        print('Fout bij ophalen gebruikers: ${response.statusCode}');
+      }
+    } catch (e) {
+      print('Fout bij laden: $e');
+    }
+  }
+
+  void _filterGebruikers(String zoekterm) {
+    setState(() {
+      gefilterdeGebruikers = alleGebruikers.where((gebruiker) {
+        final naam = gebruiker['naam']?.toLowerCase() ?? '';
+        final email = gebruiker['email']?.toLowerCase() ?? '';
+        return naam.contains(zoekterm.toLowerCase()) || email.contains(zoekterm.toLowerCase());
+      }).toList();
+    });
+  }
+
+  Future<void> _verwijderGebruiker(int id) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Verwijder gebruiker'),
+        content: const Text('Weet je zeker dat je deze gebruiker wilt verwijderen?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Annuleren')),
+          TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('Verwijderen')),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      final response = await http.delete(Uri.parse('http://10.0.2.2:8000/gebruikers/$id'));
+      if (response.statusCode == 200) {
+        _laadGebruikers();
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Verwijderen mislukt')),
+        );
+      }
+    }
+  }
+
+  Future<void> _bewerkRol(int id, String huidigeRol) async {
+    final nieuweRol = await showDialog<String>(
+      context: context,
+      builder: (context) => SimpleDialog(
+        title: const Text('Kies een nieuwe rol'),
+        children: [
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(context, 'user'),
+            child: const Text('Gewone gebruiker'),
+          ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(context, 'admin'),
+            child: const Text('Admin'),
+          ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(context, 'superuser'),
+            child: const Text('Superuser'),
+          ),
+        ],
+      ),
+    );
+
+    if (nieuweRol != null && nieuweRol != huidigeRol) {
+      final response = await http.put(
+        Uri.parse('http://10.0.2.2:8000/gebruikers/$id/rol'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({'nieuwe_rol': nieuweRol}),
+      );
+
+      if (response.statusCode == 200) {
+        _laadGebruikers();
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Rol wijzigen mislukt')),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Superuser Beheer')),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(12),
+            child: TextField(
+              controller: zoekController,
+              onChanged: _filterGebruikers,
+              decoration: const InputDecoration(
+                labelText: 'Zoek gebruiker...',
+                prefixIcon: Icon(Icons.search),
+              ),
+            ),
+          ),
+          Expanded(
+            child: gefilterdeGebruikers.isEmpty
+                ? const Center(child: Text('Geen gebruikers gevonden'))
+                : ListView.builder(
+                    itemCount: gefilterdeGebruikers.length,
+                    itemBuilder: (context, index) {
+                      final gebruiker = gefilterdeGebruikers[index];
+                      return ListTile(
+                        leading: const Icon(Icons.person),
+                        title: Text(gebruiker['naam'] ?? 'Onbekend'),
+                        subtitle: Text('${gebruiker['email'] ?? ''} • Rol: ${gebruiker['role']}'),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              icon: const Icon(Icons.chat_bubble_outline),
+                              onPressed: () {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(content: Text('Chatfunctie komt nog')),
+                                );
+                              },
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.edit),
+                              onPressed: () => _bewerkRol(gebruiker['id'], gebruiker['role']),
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.delete_outline),
+                              onPressed: () => _verwijderGebruiker(gebruiker['id']),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+}

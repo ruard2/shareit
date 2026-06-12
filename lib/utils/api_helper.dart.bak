@@ -1,0 +1,51 @@
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:convert';
+
+class ApiHelper {
+  static const String baseUrl = 'http://10.0.2.2:8000';
+
+  /// Haalt session_id op uit lokale opslag
+  static Future<Map<String, String>> _getHeaders() async {
+    final prefs = await SharedPreferences.getInstance();
+    final sessionId = prefs.getString('session_id') ?? '';
+    return {
+      'Content-Type': 'application/json',
+      'cookie': 'session_id=$sessionId',
+    };
+  }
+
+  /// GET-verzoek
+  static Future<http.Response> get(String endpoint) async {
+    final headers = await _getHeaders();
+    return await http.get(Uri.parse('$baseUrl$endpoint'), headers: headers);
+  }
+
+  /// POST-verzoek (met optionele body)
+  static Future<http.Response> post(
+      String endpoint, Map<String, dynamic>? body) async {
+    final headers = await _getHeaders();
+    return await http.post(
+      Uri.parse('$baseUrl$endpoint'),
+      headers: headers,
+      body: body != null ? jsonEncode(body) : null,
+    );
+  }
+
+  /// PUT-verzoek (voor updates)
+  static Future<http.Response> put(
+      String endpoint, Map<String, dynamic>? body) async {
+    final headers = await _getHeaders();
+    return await http.put(
+      Uri.parse('$baseUrl$endpoint'),
+      headers: headers,
+      body: body != null ? jsonEncode(body) : null,
+    );
+  }
+
+  /// DELETE-verzoek
+  static Future<http.Response> delete(String endpoint) async {
+    final headers = await _getHeaders();
+    return await http.delete(Uri.parse('$baseUrl$endpoint'), headers: headers);
+  }
+}

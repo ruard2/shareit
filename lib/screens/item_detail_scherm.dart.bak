@@ -1,0 +1,98 @@
+import 'package:flutter/material.dart';
+import 'dart:io';
+import 'dart:convert';
+import '../models/item.dart';
+import '../utils/api_helper.dart';
+
+class ItemDetailScherm extends StatelessWidget {
+  final Item item;
+  static const _baseUrl = 'http://10.0.2.2:8000';
+
+  const ItemDetailScherm({Key? key, required this.item}) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    Widget? imageWidget;
+    if (item.imagePath != null && item.imagePath!.isNotEmpty) {
+      if (item.imagePath!.startsWith('/static/')) {
+        imageWidget = Image.network(
+          '$_baseUrl${item.imagePath!}',
+          width: double.infinity,
+          height: 200,
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+        );
+      } else {
+        imageWidget = Image.file(
+          File(item.imagePath!),
+          width: double.infinity,
+          height: 200,
+          fit: BoxFit.cover,
+        );
+      }
+    }
+
+    final bool isFreePickup = item.leenkosten == null;
+
+    return Scaffold(
+      appBar: AppBar(title: Text(item.name)),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (imageWidget != null) ...[
+              imageWidget,
+              const SizedBox(height: 16),
+            ],
+            Text('Naam: ${item.name}', style: const TextStyle(fontSize: 18)),
+            const SizedBox(height: 8),
+            if (item.info != null) Text('Info: ${item.info!}'),
+            const SizedBox(height: 8),
+            if (!isFreePickup) Text('Leenkosten: €${item.leenkosten!}'),
+            const Spacer(),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16.0),
+              child: ElevatedButton(
+                onPressed: () async {
+                  final endpoint = isFreePickup
+                      ? '/items/${item.id}/reserve'
+                      : '/items/${item.id}/borrow';
+                  final resp = await ApiHelper.post(endpoint, {});
+                  Navigator.of(context).pop();
+                  if (resp.statusCode == 200) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(isFreePickup
+                            ? 'Afhaalverzoek verstuurd voor ${item.name}'
+                            : 'Leenverzoek verstuurd voor ${item.name}'),
+                      ),
+                    );
+                  } else {
+                    String detail;
+                    try {
+                      final err = jsonDecode(resp.body) as Map<String, dynamic>;
+                      detail = err['detail']?.toString() ??
+                          resp.statusCode.toString();
+                    } catch (_) {
+                      detail = resp.statusCode.toString();
+                    }
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(isFreePickup
+                            ? 'Kon afhaalverzoek niet versturen: $detail'
+                            : 'Kon niet lenen: $detail'),
+                      ),
+                    );
+                  }
+                },
+                child: Text(isFreePickup ? 'Afhalen' : 'Leen'),
+              ),
+            ),
+            const SizedBox(height: 16),
+          ],
+        ),
+      ),
+    );
+  }
+}

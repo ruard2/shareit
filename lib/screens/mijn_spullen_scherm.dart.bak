@@ -1,0 +1,362 @@
+import 'dart:io';
+import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+import 'package:shared_preferences/shared_preferences.dart';
+
+import 'nieuw_item_scherm.dart';
+import 'item_detail_scherm.dart';
+import '../models/item.dart';
+import 'new_message_screen.dart';
+import '../env.dart';
+
+class MijnSpullenScherm extends StatefulWidget {
+  const MijnSpullenScherm({Key? key}) : super(key: key);
+
+  @override
+  State<MijnSpullenScherm> createState() => _MijnSpullenSchermState();
+}
+
+class _MijnSpullenSchermState extends State<MijnSpullenScherm> {
+  static const _baseUrl = '${Env.apiBase}';
+  List<Item> _mijnSpullen = [];
+  List<Item> _geleendeSpullen = [];
+  int? _userId;
+  bool _loading = true;
+
+  // 0 = alle, 1 = uitgeleend door mij, 2 = geleend door mij
+  int _selectedTab = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _laadGebruikerEnAlleSpullen();
+  }
+
+  Future<void> _meldTeruggegeven(Item item) async {
+    final prefs = await SharedPreferences.getInstance();
+    final sessionId = prefs.getString('session_id');
+    if (sessionId == null) return;
+
+    final resp = await http.post(
+      Uri.parse('$_baseUrl/items/${item.id}/mark_returned'),
+      headers: {'cookie': 'session_id=$sessionId'},
+    );
+
+    if (resp.statusCode == 200) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Teruggeven gemeld voor "${item.name}".')),
+      );
+      await _laadGebruikerEnAlleSpullen();
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Melden mislukt: ${resp.statusCode}')),
+      );
+    }
+  }
+
+  Future<void> _laadGebruikerEnAlleSpullen() async {
+    final prefs = await SharedPreferences.getInstance();
+    final sessionId = prefs.getString('session_id');
+    if (sessionId == null) {
+      setState(() => _loading = false);
+      return;
+    }
+
+    // Haal eigen userId op
+    final meResp = await http.get(
+      Uri.parse('$_baseUrl/gebruikers/mij'),
+      headers: {'cookie': 'session_id=$sessionId'},
+    );
+    if (meResp.statusCode == 200) {
+      final data = json.decode(meResp.body);
+      _userId = data['id'] as int;
+      await Future.wait([
+        _laadEigenSpullen(sessionId),
+        _laadGeleendeSpullen(sessionId),
+      ]);
+    }
+    setState(() => _loading = false);
+  }
+
+  Future<void> _laadEigenSpullen(String sessionId) async {
+    final resp = await http.get(
+      Uri.parse('$_baseUrl/items/user/$_userId'),
+      headers: {'cookie': 'session_id=$sessionId'},
+    );
+    if (resp.statusCode == 200) {
+      final list = json.decode(resp.body) as List<dynamic>;
+      _mijnSpullen = list.map((j) => Item.fromJson(j)).toList();
+    }
+  }
+
+  Future<void> _laadGeleendeSpullen(String sessionId) async {
+    final resp = await http.get(
+      Uri.parse('$_baseUrl/items/'),
+      headers: {'cookie': 'session_id=$sessionId'},
+    );
+    if (resp.statusCode == 200) {
+      final list = json.decode(resp.body) as List<dynamic>;
+      _geleendeSpullen = list
+          .map((j) => Item.fromJson(j))
+          .where((i) => i.lenderId == _userId)
+          .toList();
+    }
+  }
+
+  Future<void> _verwijderItem(Item item) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text('Verwijder "${item.name}"?'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Nee')),
+          TextButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Ja')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+
+    final prefs = await SharedPreferences.getInstance();
+    final sessionId = prefs.getString('session_id');
+    final resp = await http.delete(
+      Uri.parse('$_baseUrl/items/${item.id}'),
+      headers: {'cookie': 'session_id=$sessionId'},
+    );
+    if (resp.statusCode == 200) {
+      await _laadGebruikerEnAlleSpullen();
+    }
+  }
+
+  Future<void> _vraagTerug(Item item) async {
+    final prefs = await SharedPreferences.getInstance();
+    final sessionId = prefs.getString('session_id');
+    if (sessionId == null) return;
+
+    final resp = await http.post(
+      Uri.parse('$_baseUrl/items/${item.id}/request_return'),
+      headers: {'cookie': 'session_id=$sessionId'},
+    );
+
+    if (resp.statusCode == 200) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Terugvragen verzonden voor "${item.name}".')),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Terugvragen mislukt: ${resp.statusCode}')),
+      );
+    }
+  }
+
+  Future<void> _zetTerug(Item item) async {
+    final prefs = await SharedPreferences.getInstance();
+    final sessionId = prefs.getString('session_id');
+    final body = {
+      'owner_id': item.ownerId,
+      'name': item.name,
+      'info': item.info,
+      'image_path': item.imagePath,
+      'leenkosten': item.leenkosten,
+      'available_group_ids': item.availableGroupIds,
+      'status': 'free',
+      'lender_id': null,
+      'reserved_at': null
+    };
+    final resp = await http.put(
+      Uri.parse('$_baseUrl/items/${item.id}'),
+      headers: {
+        'Content-Type': 'application/json',
+        'cookie': 'session_id=$sessionId'
+      },
+      body: jsonEncode(body),
+    );
+    if (resp.statusCode == 200) {
+      await _laadGebruikerEnAlleSpullen();
+    }
+  }
+
+  void _openEditItem(Item item) => Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => NieuwItemScherm(
+            bestaandItem: item,
+            onItemToegevoegd: (_) => _laadGebruikerEnAlleSpullen(),
+          ),
+        ),
+      );
+
+  void _openNieuwItem() => Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => NieuwItemScherm(
+            onItemToegevoegd: (_) => _laadGebruikerEnAlleSpullen(),
+          ),
+        ),
+      );
+
+  void _openDetail(Item item) => Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => ItemDetailScherm(item: item)),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Mijn Spullen')),
+        body: const Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    List<Item> displayList;
+    if (_selectedTab == 0) {
+      displayList = _mijnSpullen;
+    } else if (_selectedTab == 1) {
+      displayList = _mijnSpullen.where((i) => i.status == 'loaned').toList();
+    } else {
+      displayList = _geleendeSpullen;
+    }
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('Mijn Spullen')),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(8.0),
+            child: ToggleButtons(
+              isSelected: [
+                _selectedTab == 0,
+                _selectedTab == 1,
+                _selectedTab == 2,
+              ],
+              onPressed: (idx) => setState(() => _selectedTab = idx),
+              borderRadius: BorderRadius.circular(8),
+              children: const [
+                Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 12),
+                  child: Text('Alle spullen'),
+                ),
+                Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 12),
+                  child: Text('Uitgeleend'),
+                ),
+                Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 12),
+                  child: Text('Geleend'),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: ListView.builder(
+              itemCount: displayList.length,
+              itemBuilder: (ctx, i) {
+                final item = displayList[i];
+
+                Widget leading;
+                if (item.imagePath != null && item.imagePath!.isNotEmpty) {
+                  leading = item.imagePath!.startsWith('/static/')
+                      ? Image.network(
+                          '$_baseUrl${item.imagePath}',
+                          width: 50,
+                          height: 50,
+                          fit: BoxFit.cover,
+                        )
+                      : Image.file(
+                          File(item.imagePath!),
+                          width: 50,
+                          height: 50,
+                          fit: BoxFit.cover,
+                        );
+                } else {
+                  leading = const Icon(Icons.inventory);
+                }
+
+                String? line2, line3;
+                if (_selectedTab == 1 || _selectedTab == 2) {
+                  line2 = _selectedTab == 1
+                      ? 'Uitgeleend aan ${item.lenderId}'
+                      : 'Geleend van ${item.ownerId}';
+                  if (item.reservedAt != null) {
+                    final then = item.reservedAt!;
+                    final days = DateTime.now().difference(then).inDays;
+                    line3 = '$days dagen geleend';
+                  }
+                }
+
+                return ListTile(
+                  contentPadding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  leading: leading,
+                  title: Text(item.name),
+                  subtitle: (_selectedTab == 1 || _selectedTab == 2)
+                      ? Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            if (line2 != null) Text(line2),
+                            if (line3 != null) Text(line3),
+                          ],
+                        )
+                      : Text(item.info ?? ''),
+                  onTap: () => _openDetail(item),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (_selectedTab == 0) ...[
+                        IconButton(
+                          icon: const Icon(Icons.edit),
+                          onPressed: () => _openEditItem(item),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.delete),
+                          onPressed: () => _verwijderItem(item),
+                        ),
+                      ] else if (_selectedTab == 1) ...[
+                        // UITGELEEND (van mij) -> alleen TERUGVRAGEN
+                        TextButton.icon(
+                          icon: const Icon(Icons.undo),
+                          label: const Text('Terugvragen'),
+                          onPressed: () => _vraagTerug(item),
+                        ),
+                      ] else ...[
+                        // GELEEND (door mij) -> bericht sturen
+                        Padding(
+                          padding: EdgeInsets.only(
+                            right: MediaQuery.of(context).size.width * 0.07,
+                          ),
+                          child: IconButton(
+                            icon: const Icon(Icons.message),
+                            onPressed: () {
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => NewMessageScreen(
+                                    prefillRecipientId: item.ownerId,
+                                    prefillBody: 'Hoi! Over "${item.name}"...',
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                      ]
+                    ],
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+      floatingActionButton: _selectedTab == 0
+          ? FloatingActionButton(
+              onPressed: _openNieuwItem, child: const Icon(Icons.add))
+          : null,
+    );
+  }
+}

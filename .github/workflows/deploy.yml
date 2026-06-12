@@ -1,0 +1,61 @@
+name: Deploy naar GitHub Pages
+
+# Draait bij elke push naar main, of handmatig via de Actions-tab.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Rechten die de Pages-deploy nodig heeft.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Slechts één deploy tegelijk; nieuwe push annuleert een lopende.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Code ophalen
+        uses: actions/checkout@v4
+
+      - name: Flutter installeren
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Packages ophalen
+        run: flutter pub get
+
+      # base-href = /<repo-naam>/  (automatisch afgeleid, hoeft niets aangepast)
+      # API_BASE  = de Railway-URL van de backend (zet die als repo-variabele).
+      - name: Web bouwen
+        run: >
+          flutter build web --release
+          --base-href "/${{ github.event.repository.name }}/"
+          --dart-define=API_BASE=${{ vars.API_BASE }}
+
+      # Voorkomt dat GitHub Pages (Jekyll) de _flutter-map negeert.
+      - name: Jekyll uitschakelen
+        run: touch build/web/.nojekyll
+
+      - name: Build uploaden
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/web
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Publiceren op GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
