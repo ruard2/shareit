@@ -89,9 +89,9 @@ class _ItemDetailSchermState extends State<ItemDetailScherm> {
     final item = widget.item;
     Widget? imageWidget;
     if (item.imagePath != null && item.imagePath!.isNotEmpty) {
-      if (item.imagePath!.startsWith('/static/')) {
+      if (ApiHelper.isNetworkImage(item.imagePath!)) {
         imageWidget = Image.network(
-          '${ItemDetailScherm._baseUrl}${item.imagePath!}',
+          ApiHelper.resolveImageUrl(item.imagePath!),
           width: double.infinity,
           height: 200,
           fit: BoxFit.cover,

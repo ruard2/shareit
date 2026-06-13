@@ -271,7 +271,7 @@ class _ZoekSchermState extends State<ZoekScherm>
                 ),
                 if (item['image_path'] != null) ...[
                   Image.network(
-                    '$_baseUrl${item['image_path']}',
+                    ApiHelper.resolveImageUrl(item['image_path']),
                     height: 200,
                     fit: BoxFit.cover,
                     errorBuilder: (_, __, ___) => const SizedBox.shrink(),
@@ -521,7 +521,7 @@ class _ZoekSchermState extends State<ZoekScherm>
                               ? ClipRRect(
                                   borderRadius: BorderRadius.circular(6),
                                   child: Image.network(
-                                    '$_baseUrl${item['image_path']}',
+                                    ApiHelper.resolveImageUrl(item['image_path']),
                                     width: 54,
                                     height: 54,
                                     fit: BoxFit.cover,

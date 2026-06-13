@@ -288,10 +288,12 @@ class _NieuwItemSchermState extends State<NieuwItemScherm> {
     }
 
     if (_existingImagePath != null && _existingImagePath!.isNotEmpty) {
-      final isServerPath = _existingImagePath!.startsWith('/static/');
-      final preview = (isServerPath || kIsWeb)
+      final isNetwork = ApiHelper.isNetworkImage(_existingImagePath!);
+      final preview = (isNetwork || kIsWeb)
           ? Image.network(
-              isServerPath ? '$_baseUrl$_existingImagePath' : _existingImagePath!,
+              isNetwork
+                  ? ApiHelper.resolveImageUrl(_existingImagePath!)
+                  : _existingImagePath!,
               height: 150, fit: BoxFit.cover)
           : Image.file(File(_existingImagePath!), height: 150,
               fit: BoxFit.cover);

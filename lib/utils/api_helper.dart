@@ -6,6 +6,23 @@ import '../env.dart';
 class ApiHelper {
   static String get baseUrl => Env.apiBase;
 
+  /// Zet een opgeslagen image_path om naar een toonbare URL.
+  /// - Absolute http(s)-URL (bv. Cloudinary) → ongewijzigd gebruiken
+  /// - Server-pad (/static/...) → baseUrl ervoor plakken
+  /// - Anders (lokaal bestandspad) → ongewijzigd teruggeven
+  static String resolveImageUrl(String path) {
+    if (path.startsWith('http://') || path.startsWith('https://')) return path;
+    if (path.startsWith('/')) return '$baseUrl$path';
+    return path;
+  }
+
+  /// True als het pad een netwerk-URL is (Cloudinary of /static/), niet een
+  /// lokaal bestand — handig om Image.network vs Image.file te kiezen.
+  static bool isNetworkImage(String path) =>
+      path.startsWith('http://') ||
+      path.startsWith('https://') ||
+      path.startsWith('/');
+
   /// Headers voor geauthenticeerde requests.
   /// Stuurt ZOWEL Authorization: Bearer (werkt op web) ALS Cookie (werkt op mobiel).
   /// Public version so callers using http.Request / MultipartRequest can add auth headers.

@@ -530,7 +530,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                               fit: StackFit.expand,
                               children: [
                                 Image.network(
-                                  '$_baseUrl${item.imagePath}',
+                                  ApiHelper.resolveImageUrl(item.imagePath!),
                                   fit: BoxFit.cover,
                                   errorBuilder: (_, __, ___) => Icon(
                                     Icons.broken_image_outlined,

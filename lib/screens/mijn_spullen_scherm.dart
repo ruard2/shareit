@@ -264,8 +264,8 @@ class _MijnSpullenSchermState extends State<MijnSpullenScherm> {
 
   Widget _buildLeading(Item item) {
     if (item.imagePath != null && item.imagePath!.isNotEmpty) {
-      if (item.imagePath!.startsWith('/static/')) {
-        return Image.network('$_baseUrl${item.imagePath}',
+      if (ApiHelper.isNetworkImage(item.imagePath!)) {
+        return Image.network(ApiHelper.resolveImageUrl(item.imagePath!),
             width: 50, height: 50, fit: BoxFit.cover);
       }
       // Lokale bestanden zijn niet beschikbaar op web
