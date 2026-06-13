@@ -7,7 +7,11 @@ import '../widgets/app_shell.dart';
 import 'dart:convert';
 
 class RegistratieScherm extends StatefulWidget {
-  const RegistratieScherm({super.key});
+  /// Optionele uitnodigingscode (bv. via een deel-link ?invite=CODE).
+  /// Wanneer aanwezig zetten we de groepscode-modus aan en vullen we het veld.
+  final String? inviteCode;
+
+  const RegistratieScherm({super.key, this.inviteCode});
 
   @override
   State<RegistratieScherm> createState() => _RegistratieSchermState();
@@ -33,6 +37,12 @@ class _RegistratieSchermState extends State<RegistratieScherm> {
   @override
   void initState() {
     super.initState();
+    // Uitnodigingscode uit een deel-link: zet groepscode-modus aan + vul in.
+    final code = widget.inviteCode?.trim();
+    if (code != null && code.isNotEmpty) {
+      heeftGroepscode = true;
+      groepscodeController.text = code;
+    }
     _haalGroepenOp();
   }
 

@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../utils/api_helper.dart';
+import '../widgets/design_system.dart';
 
 class NodigUitScherm extends StatefulWidget {
   const NodigUitScherm({super.key});
@@ -15,6 +15,7 @@ class NodigUitScherm extends StatefulWidget {
 
 class _NodigUitSchermState extends State<NodigUitScherm> {
   String? inviteCode;
+  String? groepNaam;
   String? foutmelding;
 
   @override
@@ -25,169 +26,196 @@ class _NodigUitSchermState extends State<NodigUitScherm> {
 
   Future<void> _haalInviteCodeOp() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final userId = prefs.getString('user_id'); // indien later nodig
-
       final response = await ApiHelper.get('/groep/invite_code');
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         setState(() {
           inviteCode = data['invite_code'];
+          groepNaam = data['group_name'];
         });
       } else {
-        setState(() {
-          foutmelding =
-              'Kon uitnodigingscode niet ophalen (status: ${response.statusCode})';
-        });
+        setState(() => foutmelding =
+            'Kon uitnodigingscode niet ophalen (status: ${response.statusCode})');
       }
     } catch (e) {
-      setState(() {
-        foutmelding = 'Fout bij ophalen uitnodigingscode: $e';
-      });
+      setState(() => foutmelding = 'Fout bij ophalen uitnodigingscode: $e');
     }
   }
 
+  /// Bouwt een tap-to-join link op basis van de huidige host.
+  /// Op het web: https://<host><pad>?invite=CODE
+  String _inviteLink() {
+    final base = Uri.base;
+    final root = Uri(
+      scheme: base.scheme,
+      host: base.host,
+      port: base.hasPort ? base.port : null,
+      path: base.path,
+    );
+    return root.replace(queryParameters: {'invite': inviteCode!}).toString();
+  }
+
   String _maakBericht() {
-    final code = inviteCode ?? '';
-    return 'Hoi! Sluit je aan bij onze groep in de app.\n'
-        'Uitnodigingscode: $code\n'
-        'Open de app en voer deze code in om toe te treden.';
+    final naam = groepNaam ?? 'onze groep';
+    return 'Hoi! Je bent uitgenodigd voor "$naam" in ShareIt.\n\n'
+        'Tik op deze link om mee te doen:\n${_inviteLink()}\n\n'
+        '(Of voer in de app de code in: $inviteCode)';
   }
 
   Future<void> _launchOrSnack(Uri uri) async {
     if (await canLaunchUrl(uri)) {
       await launchUrl(uri, mode: LaunchMode.externalApplication);
-    } else {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Kon geen app openen.')),
-      );
+    } else if (mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Kon geen app openen.')));
     }
   }
 
-  // ——— Deel-acties (zonder extra packages)
-  Future<void> _deelWhatsApp() async {
-    if (inviteCode == null) return;
-    final text = Uri.encodeComponent(_maakBericht());
-    final uri = Uri.parse('https://wa.me/?text=$text');
-    await _launchOrSnack(uri);
-  }
+  Future<void> _deelWhatsApp() async =>
+      _launchOrSnack(Uri.parse('https://wa.me/?text=${Uri.encodeComponent(_maakBericht())}'));
 
-  Future<void> _deelTelegram() async {
-    if (inviteCode == null) return;
-    final text = Uri.encodeComponent(_maakBericht());
-    final uri = Uri.parse('https://t.me/share/url?url=&text=$text');
-    await _launchOrSnack(uri);
-  }
+  Future<void> _deelEmail() async => _launchOrSnack(Uri(
+        scheme: 'mailto',
+        query:
+            'subject=${Uri.encodeComponent('Uitnodiging voor ${groepNaam ?? 'onze groep'}')}&body=${Uri.encodeComponent(_maakBericht())}',
+      ));
 
-  Future<void> _deelEmail() async {
-    if (inviteCode == null) return;
-    final subject = Uri.encodeComponent('Uitnodiging voor onze groep');
-    final body = Uri.encodeComponent(_maakBericht());
-    final uri = Uri(
-      scheme: 'mailto',
-      query: 'subject=$subject&body=$body',
-    );
-    await _launchOrSnack(uri);
-  }
+  Future<void> _deelSMS() async =>
+      _launchOrSnack(Uri.parse('sms:?body=${Uri.encodeComponent(_maakBericht())}'));
 
-  Future<void> _deelSMS() async {
-    if (inviteCode == null) return;
-    final body = Uri.encodeComponent(_maakBericht());
-    // Zonder nummer -> gebruiker kiest zelf contact
-    final uri = Uri.parse('sms:?body=$body');
-    await _launchOrSnack(uri);
-  }
-
-  Future<void> _kopieerCode() async {
-    if (inviteCode == null) return;
-    await Clipboard.setData(ClipboardData(text: inviteCode!)); // non-null
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Code gekopieerd')),
-    );
+  Future<void> _kopieer(String waarde, String melding) async {
+    await Clipboard.setData(ClipboardData(text: waarde));
+    if (mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(melding)));
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final heeftFout = foutmelding != null;
-    final heeftCode = inviteCode != null;
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
 
     return Scaffold(
       appBar: AppBar(title: const Text('Nodig iemand uit')),
-      body: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24.0),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              if (heeftFout)
-                Text(
-                  foutmelding!,
-                  style: const TextStyle(color: Colors.red),
-                  textAlign: TextAlign.center,
-                ),
-              if (heeftCode) ...[
-                const Text(
-                  'Deel deze code met iemand om hem/haar toe te laten treden tot jouw groep:',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 16),
-                ),
-                const SizedBox(height: 20),
-                SelectableText(
-                  inviteCode!, // non-null assertion; we zitten in heeftCode
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    fontSize: 28,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 1.2,
+      body: foutmelding != null
+          ? Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Text(foutmelding!,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: cs.error)),
+              ),
+            )
+          : inviteCode == null
+              ? const Center(child: CircularProgressIndicator())
+              : ResponsiveCenter(
+                  child: ListView(
+                    padding: const EdgeInsets.all(20),
+                    children: [
+                      Icon(Icons.group_add_rounded, size: 56, color: cs.primary),
+                      const SizedBox(height: 12),
+                      Text(
+                        'Nodig mensen uit voor ${groepNaam ?? 'je groep'}',
+                        textAlign: TextAlign.center,
+                        style: tt.titleLarge
+                            ?.copyWith(fontWeight: FontWeight.w600),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'Deel de link hieronder. Wie erop tikt komt direct in het '
+                        'aanmeldscherm met de code al ingevuld.',
+                        textAlign: TextAlign.center,
+                        style: tt.bodyMedium
+                            ?.copyWith(color: cs.onSurfaceVariant),
+                      ),
+                      const SizedBox(height: 24),
+
+                      // Link-kaart
+                      Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: cs.surfaceContainerHighest,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('Uitnodigingslink',
+                                style: tt.labelMedium
+                                    ?.copyWith(color: cs.onSurfaceVariant)),
+                            const SizedBox(height: 6),
+                            SelectableText(_inviteLink(),
+                                style: tt.bodyMedium),
+                            const SizedBox(height: 12),
+                            Align(
+                              alignment: Alignment.centerRight,
+                              child: FilledButton.icon(
+                                onPressed: () =>
+                                    _kopieer(_inviteLink(), 'Link gekopieerd'),
+                                icon: const Icon(Icons.copy_rounded, size: 18),
+                                label: const Text('Kopieer link'),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+
+                      Text('Delen via', style: tt.titleMedium),
+                      const SizedBox(height: 12),
+                      Wrap(
+                        spacing: 12,
+                        runSpacing: 12,
+                        children: [
+                          ElevatedButton.icon(
+                            onPressed: _deelWhatsApp,
+                            icon: const Icon(Icons.chat_rounded),
+                            label: const Text('WhatsApp'),
+                          ),
+                          ElevatedButton.icon(
+                            onPressed: _deelEmail,
+                            icon: const Icon(Icons.email_outlined),
+                            label: const Text('E-mail'),
+                          ),
+                          ElevatedButton.icon(
+                            onPressed: _deelSMS,
+                            icon: const Icon(Icons.sms_outlined),
+                            label: const Text('SMS'),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 24),
+
+                      // Code als terugval
+                      Center(
+                        child: Column(
+                          children: [
+                            Text('Of geef de code door',
+                                style: tt.bodySmall
+                                    ?.copyWith(color: cs.onSurfaceVariant)),
+                            const SizedBox(height: 6),
+                            GestureDetector(
+                              onTap: () =>
+                                  _kopieer(inviteCode!, 'Code gekopieerd'),
+                              child: Text(
+                                inviteCode!,
+                                style: tt.displaySmall?.copyWith(
+                                  fontWeight: FontWeight.bold,
+                                  letterSpacing: 2,
+                                ),
+                              ),
+                            ),
+                            Text('(tik om te kopiëren)',
+                                style: tt.labelSmall
+                                    ?.copyWith(color: cs.onSurfaceVariant)),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 32),
+                    ],
                   ),
                 ),
-                const SizedBox(height: 24),
-                Wrap(
-                  spacing: 12,
-                  runSpacing: 12,
-                  alignment: WrapAlignment.center,
-                  children: [
-                    ElevatedButton.icon(
-                      onPressed: _deelWhatsApp,
-                      icon: const Icon(Icons.chat), // geen extra icon pack
-                      label: const Text('WhatsApp'),
-                    ),
-                    ElevatedButton.icon(
-                      onPressed: _deelTelegram,
-                      icon: const Icon(Icons.send),
-                      label: const Text('Telegram'),
-                    ),
-                    ElevatedButton.icon(
-                      onPressed: _deelEmail,
-                      icon: const Icon(Icons.email_outlined),
-                      label: const Text('E-mail'),
-                    ),
-                    ElevatedButton.icon(
-                      onPressed: _deelSMS,
-                      icon: const Icon(Icons.sms_outlined),
-                      label: const Text('SMS'),
-                    ),
-                    OutlinedButton.icon(
-                      onPressed: _kopieerCode,
-                      icon: const Icon(Icons.copy),
-                      label: const Text('Kopieer code'),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  'Tip: deze knoppen zetten de code en uitleg voor je klaar.',
-                  style: Theme.of(context).textTheme.bodySmall,
-                  textAlign: TextAlign.center,
-                ),
-              ] else if (!heeftFout)
-                const CircularProgressIndicator(),
-            ],
-          ),
-        ),
-      ),
     );
   }
 }

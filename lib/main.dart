@@ -159,8 +159,15 @@ class _MyAppState extends State<MyApp> {
     final prefs = await SharedPreferences.getInstance();
     final sessionId = prefs.getString('session_id');
 
+    // Deel-link met uitnodigingscode? (bv. .../shareit/?invite=ABC123)
+    final inviteCode = Uri.base.queryParameters['invite'];
+
     if (sessionId == null) {
-      setState(() => _startScherm = const StartScherm());
+      if (inviteCode != null && inviteCode.trim().isNotEmpty) {
+        setState(() => _startScherm = RegistratieScherm(inviteCode: inviteCode));
+      } else {
+        setState(() => _startScherm = const StartScherm());
+      }
       return;
     }
 

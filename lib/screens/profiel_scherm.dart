@@ -7,6 +7,7 @@ import '../utils/api_helper.dart';
 import '../widgets/design_system.dart';
 
 import 'mijn_verzoeken_scherm.dart';
+import 'nodiguitscherm.dart';
 import 'groep_beheren_scherm.dart';
 import 'beheer_groepsleden_scherm.dart';
 import 'info_scherm.dart';
@@ -179,6 +180,16 @@ class _ProfielSchermState extends State<ProfielScherm> {
                   showChevron: true,
                   onTap: () => Navigator.push(context,
                       MaterialPageRoute(builder: (_) => const MijnVerzoekenScherm())),
+                ),
+                IosListTile(
+                  leading: const IosIconContainer(
+                      icon: Icons.group_add_outlined,
+                      color: AppleColors.systemGreen),
+                  title: const Text('Nodig iemand uit'),
+                  subtitle: const Text('Deel een uitnodigingslink'),
+                  showChevron: true,
+                  onTap: () => Navigator.push(context,
+                      MaterialPageRoute(builder: (_) => const NodigUitScherm())),
                 ),
                 if (_isBeheerder)
                   IosListTile(
