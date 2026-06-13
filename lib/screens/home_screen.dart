@@ -225,9 +225,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           await _refreshCounts();
           await _loadGratisItems();
         },
-        child: isTablet && isLand
-            ? _tabletLandscapeLayout(cs, tt, hPad)
-            : _phoneLayout(cs, tt, hPad, isTablet),
+        child: _phoneLayout(cs, tt, hPad, isTablet),
       ),
     );
   }
@@ -274,14 +272,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           ),
         ),
 
-        IconButton(
-          icon: const Icon(Icons.settings_outlined),
-          tooltip: 'Instellingen',
-          onPressed: () => Navigator.push(
-            context,
-            MaterialPageRoute(builder: (_) => const InstellingenScherm()),
-          ).then((_) => _laadDashboardGegevens()),
-        ),
       ],
     );
   }
@@ -289,24 +279,44 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   // ---- Phone / portrait layout -------------------------------------------
 
   Widget _phoneLayout(ColorScheme cs, TextTheme tt, double hPad, bool isTablet) {
-    return ListView(
-      padding: EdgeInsets.symmetric(horizontal: hPad, vertical: 16),
-      children: [
-        // Stats row
-        _statsRow(cs, tt, isTablet),
-        const SizedBox(height: 20),
+    return ResponsiveCenter(
+      child: ListView(
+        padding: EdgeInsets.symmetric(horizontal: hPad, vertical: 16),
+        children: [
+          // Stats row
+          _statsRow(cs, tt, isTablet),
+          const SizedBox(height: 24),
 
-        // Navigation section
-        _navSection(cs, tt),
+          // Gratis items — of een vriendelijke lege staat
+          if (_gratisItems.isNotEmpty)
+            _gratisItemsSection(cs, tt, hPad)
+          else
+            _emptyGratis(cs, tt),
 
-        // Gratis items carousel
-        if (_gratisItems.isNotEmpty) ...[
-          const SizedBox(height: 20),
-          _gratisItemsSection(cs, tt, hPad),
+          const SizedBox(height: 32),
         ],
+      ),
+    );
+  }
 
-        const SizedBox(height: 32),
-      ],
+  Widget _emptyGratis(ColorScheme cs, TextTheme tt) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 40, horizontal: 24),
+      child: Column(
+        children: [
+          Icon(Icons.inventory_2_outlined, size: 56, color: cs.onSurfaceVariant),
+          const SizedBox(height: 14),
+          Text('Nog niks beschikbaar',
+              style: tt.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
+          const SizedBox(height: 6),
+          Text(
+            'Er staan nog geen gratis spullen in jouw groepen.\n'
+            'Voeg zelf iets toe met de +-knop, of kijk later nog eens.',
+            textAlign: TextAlign.center,
+            style: tt.bodyMedium?.copyWith(color: cs.onSurfaceVariant),
+          ),
+        ],
+      ),
     );
   }
 

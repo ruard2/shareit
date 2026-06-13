@@ -9,6 +9,7 @@ import 'package:http/http.dart' as http;
 
 // THEME + SCREENS
 import 'theme.dart';
+import 'widgets/app_shell.dart';
 import 'screens/home_screen.dart';
 import 'screens/login_scherm.dart';
 import 'screens/registratie_scherm.dart';
@@ -183,7 +184,7 @@ class _MyAppState extends State<MyApp> {
         await registerFcmTokenWithBackend();
 
         setState(() => _startScherm =
-            isApproved ? const HomeScreen() : const StartScherm());
+            isApproved ? const AppShell() : const StartScherm());
       } else {
         setState(() => _startScherm = const StartScherm());
       }
@@ -201,7 +202,7 @@ class _MyAppState extends State<MyApp> {
           controller: _settings,
           child: MaterialApp(
             debugShowCheckedModeBanner: false,
-            title: 'Spullen Delen',
+            title: 'ShareIt',
 
             // Thema
             theme: AppTheme.light(),
@@ -218,7 +219,7 @@ class _MyAppState extends State<MyApp> {
             // ],
 
             routes: {
-              '/home': (c) => const HomeScreen(),
+              '/home': (c) => const AppShell(),
               '/login': (c) => const LoginScherm(),
               '/registratie': (c) => const RegistratieScherm(),
               '/zoek': (c) => const ZoekScherm(),

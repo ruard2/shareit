@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../utils/api_helper.dart';
 import '../widgets/design_system.dart';
-import 'home_screen.dart';
+import '../widgets/app_shell.dart';
 import 'dart:convert';
 
 class RegistratieScherm extends StatefulWidget {
@@ -120,7 +120,7 @@ class _RegistratieSchermState extends State<RegistratieScherm> {
         if (isApproved) {
           Navigator.pushReplacement(
             context,
-            MaterialPageRoute(builder: (_) => const HomeScreen()),
+            MaterialPageRoute(builder: (_) => const AppShell()),
           );
         } else {
           _toonDialoogEnSluit();
