@@ -34,11 +34,17 @@ jobs:
 
       # base-href = /<repo-naam>/  (automatisch afgeleid, hoeft niets aangepast)
       # API_BASE  = de Railway-URL van de backend (zet die als repo-variabele).
+      # We strippen alle witruimte uit API_BASE zodat een per ongeluk
+      # meegekopieerde spatie/tab de build niet breekt (URLs hebben geen spaties).
       - name: Web bouwen
-        run: >
-          flutter build web --release
-          --base-href "/${{ github.event.repository.name }}/"
-          --dart-define=API_BASE=${{ vars.API_BASE }}
+        env:
+          API_BASE_RAW: ${{ vars.API_BASE }}
+        run: |
+          API_BASE_CLEAN=$(echo "$API_BASE_RAW" | tr -d '[:space:]')
+          echo "Backend-URL: '$API_BASE_CLEAN'"
+          flutter build web --release \
+            --base-href "/${{ github.event.repository.name }}/" \
+            --dart-define=API_BASE="$API_BASE_CLEAN"
 
       # Voorkomt dat GitHub Pages (Jekyll) de _flutter-map negeert.
       - name: Jekyll uitschakelen
